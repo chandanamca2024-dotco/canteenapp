@@ -1,97 +1,128 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# 🍽️ DineDesk - College Canteen Management App
 
-# Getting Started
+A React Native mobile app for managing college canteen orders with real-time updates, OTP authentication, and role-based access (User & Admin).
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## 📖 Quick Start
 
-## Step 1: Start Metro
+**👉 START HERE**: Read [SETUP.md](SETUP.md) for complete setup instructions (5 minutes)
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+## 🎯 Key Features
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+- ✅ **OTP Authentication** - Email-based login with 6-digit OTP codes
+- ✅ **User Dashboard** - Browse menu, add to cart, place orders
+- ✅ **Admin Panel** - Manage menu items, view orders, update status
+- ✅ **Real-time Updates** - Order status updates instantly
+- ✅ **Role-based Access** - Different UI for users vs admins
+- ✅ **Dark Mode** - Light and dark theme support
+- ✅ **Database Backed** - Powered by Supabase
 
-```sh
-# Using npm
-npm start
+## 🚀 Quick Setup (5 Min)
 
-# OR using Yarn
-yarn start
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Configure environment (copy .env.example to .env)
+cp .env.example .env
+
+# 3. Add your Supabase credentials to .env
+# SUPABASE_URL=https://your-project.supabase.co
+# SUPABASE_ANON_KEY=your-key-here
+# ADMIN_EMAIL=admin@yourcompany.com
+
+# 4. Run SQL setup in Supabase
+# Copy supabase-admin-complete-setup.sql to Supabase SQL Editor
+
+# 5. Run the app
+npm run android   # or: npm run ios
 ```
 
-## Step 2: Build and run your app
+## 📁 What's Inside
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+| Folder | Purpose |
+|--------|---------|
+| `src/screens/auth` | Login, OTP, Register screens |
+| `src/screens/user` | User dashboard & menu |
+| `src/screens/admin` | Admin dashboard & management |
+| `src/components` | Reusable UI components |
+| `src/navigation` | App routing setup |
+| `src/lib` | Supabase client & OTP service |
+| `src/config` | Admin email, branding |
+| `src/theme` | Colors, dark mode |
 
-### Android
+## 🔐 OTP Authentication
 
-```sh
-# Using npm
-npm run android
+- Users enter email → receive 6-digit OTP code
+- Code valid for 10 minutes
+- One-time use verification
+- Resend OTP option available
+- Works with custom database (no email service needed initially)
 
-# OR using Yarn
-yarn android
+## 👤 User Types
+
+| Type | Access | Dashboard |
+|------|--------|-----------|
+| **Regular User** | Menu, cart, orders | 5 tabs |
+| **Admin** | All management | 4 tabs (Orders, Menu, Items, Settings) |
+
+Set admin email in `.env`:
+```
+ADMIN_EMAIL=admin@yourcompany.com
 ```
 
-### iOS
+## ❓ Troubleshooting
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+**OTP not received?**
+- Check spam folder
+- See OTP in Supabase console: Dashboard → Authentication → Users
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+**"Invalid OTP" error?**
+- Code expires after 10 minutes → request new one
+- Check database for recent OTP codes
 
-```sh
-bundle install
-```
+**App won't start?**
+- Ensure `.env` file exists with credentials
+- Run `npm install` again
+- Check terminal for error messages
 
-Then, and every time you update your native dependencies, run:
+## 📚 Documentation
 
-```sh
-bundle exec pod install
-```
+- **[SETUP.md](SETUP.md)** - Complete setup guide ⭐ START HERE
+- **[CLEANUP_SUMMARY.md](CLEANUP_SUMMARY.md)** - What was fixed
+- SQL scripts in root directory for database setup
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+## 🛠️ Technologies Used
 
-```sh
-# Using npm
-npm run ios
+- **React Native** - Mobile framework
+- **TypeScript** - Type safety
+- **Supabase** - Backend & authentication
+- **React Navigation** - Screen routing
+- **React Native Paper** - UI components
 
-# OR using Yarn
-yarn ios
-```
+## 🧪 Testing
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+Before deploying:
+1. Test OTP flow (register → OTP → dashboard)
+2. Test user orders workflow
+3. Test admin menu management
+4. Verify order status updates
+5. Test dark/light mode toggle
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+## 📞 Support
 
-## Step 3: Modify your app
+If something doesn't work:
+1. Check **[SETUP.md](SETUP.md)** troubleshooting section
+2. Verify `.env` credentials
+3. Check Supabase dashboard for table/data issues
+4. Review console logs: `Shift+F12` or `adb logcat`
 
-Now that you have successfully run the app, let's make changes!
+## 📝 Notes
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+- This is a **secured version** with no hardcoded credentials
+- All sensitive data goes in `.env` file (git-ignored)
+- OTP service uses Supabase database
+- Ready for production deployment
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+---
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+**👉 Next Step**: Open [SETUP.md](SETUP.md) and follow the 5-step guide!
