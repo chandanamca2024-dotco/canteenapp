@@ -1058,7 +1058,7 @@ export default function UserDashboard({ navigation, route }: any) {
         />
       )}
       {activeTab === 'wallet' && (
-        <WalletTab colors={colors} openDrawer={() => setDrawerVisible(true)} />
+        <WalletTab colors={colors} />
       )}
       {activeTab === 'feedback' && (
         <FeedbackTab colors={colors} />
