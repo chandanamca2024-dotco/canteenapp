@@ -1,5 +1,6 @@
-export const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@dinedesk.com';
-export const OTP_OPTIONAL = process.env.OTP_OPTIONAL === 'true' ? true : false;
+// Admin configuration
+export const ADMIN_EMAIL = 'admin@dinedesk.com';
+export const OTP_OPTIONAL = false;
 
 export const BRANDING = {
   theme: (process.env.BRANDING_THEME || 'green') as 'green' | 'blue' | 'orange',

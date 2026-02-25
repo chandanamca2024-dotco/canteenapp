@@ -11,18 +11,31 @@ import { Picker } from '@react-native-picker/picker';
 import AppInput from '../../components/AppInput';
 import AppButton from '../../components/AppButton';
 import { supabase } from '../../lib/supabase';
-import { sendOtpCode } from '../../lib/otpService';
 
 export default function Register({ navigation }: any) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState('Student');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  const sendOtp = async () => {
-    if (!name || !email || !phone) {
-      Alert.alert('Error', 'Fill all fields');
+  const handleSignUp = async () => {
+    if (!name || !email || !phone || !password || !confirmPassword) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
       return;
     }
 
@@ -30,12 +43,6 @@ export default function Register({ navigation }: any) {
 
     try {
       // Check if user already exists
-      const { data } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password: 'dummy', // Will fail, just checking if user exists
-      }).catch(() => ({ data: null }));
-
-      // User might exist, try to verify
       const { data: existingUser } = await supabase
         .from('profiles')
         .select('id')
@@ -45,34 +52,68 @@ export default function Register({ navigation }: any) {
       if (existingUser) {
         setLoading(false);
         Alert.alert(
-          'Email Already Registered',
-          'This email is already in use. Please login instead.'
+          '❌ Email Already Registered',
+          'This email is already in use. Please login instead.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Go to Login', onPress: () => navigation.navigate('Login') }
+          ]
         );
-        navigation.navigate('Login');
         return;
       }
-    } catch (err) {
-      console.log('Pre-check error:', err);
+
+      // Sign up with password
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: password.trim(),
+      });
+
+      if (signUpError) {
+        setLoading(false);
+        Alert.alert('❌ Sign Up Failed', signUpError.message);
+        return;
+      }
+
+      if (authData?.user?.id) {
+        // Create user profile
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([
+            {
+              id: authData.user.id,
+              email: email.trim(),
+              name: name.trim(),
+              phone: phone.trim(),
+              role: role,
+              login_type: 'email',
+            },
+          ]);
+
+        if (profileError) {
+          setLoading(false);
+          Alert.alert('❌ Profile Creation Failed', profileError.message);
+          return;
+        }
+
+        setLoading(false);
+        Alert.alert(
+          '✅ Account Created Successfully!',
+          'Your account has been created. Please login with your credentials.',
+          [
+            {
+              text: 'Go to Login',
+              onPress: () => {
+                navigation.navigate('Login', { email: email.trim() });
+              },
+            },
+          ]
+        );
+      }
+    } catch (error: any) {
+      setLoading(false);
+      console.error('Sign up error:', error);
+      Alert.alert('❌ Error', error.message || 'Failed to create account');
     }
-
-    // Send custom OTP code via email
-    const result = await sendOtpCode(email.trim(), 'register');
-
-    setLoading(false);
-
-    if (!result.success) {
-      Alert.alert('Error', result.message);
-      return;
-    }
-
-    Alert.alert('✅ OTP Sent', result.message);
-    navigation.navigate('Otp', { 
-      email: email.trim(), 
-      mode: 'register',
-      name: name.trim(),
-      phone: phone.trim(),
-      role: role,
-    });
   };
 
   return (
@@ -107,6 +148,20 @@ export default function Register({ navigation }: any) {
           onChangeText={setPhone}
         />
 
+        <AppInput
+          placeholder="Password"
+          secureTextEntry={!showPassword}
+          value={password}
+          onChangeText={setPassword}
+        />
+
+        <AppInput
+          placeholder="Confirm Password"
+          secureTextEntry={!showConfirmPassword}
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
+        />
+
         {/* ROLE PICKER */}
         <View style={styles.pickerWrapper}>
           <Text style={styles.pickerLabel}>Select Role</Text>
@@ -121,9 +176,19 @@ export default function Register({ navigation }: any) {
         </View>
 
         <AppButton
-          title={loading ? 'Sending OTP...' : 'Send OTP'}
-          onPress={sendOtp}
+          title={loading ? 'Creating Account...' : 'Create Account'}
+          onPress={handleSignUp}
         />
+
+        <Text style={styles.loginLink}>
+          Already have an account?{' '}
+          <Text
+            style={styles.loginText}
+            onPress={() => navigation.navigate('Login')}
+          >
+            Login here
+          </Text>
+        </Text>
       </View>
     </KeyboardAvoidingView>
   );
@@ -174,5 +239,15 @@ const styles = StyleSheet.create({
   picker: {
     height: 48,
     width: '100%',
+  },
+  loginLink: {
+    textAlign: 'center',
+    color: '#6B7280',
+    marginTop: 16,
+    fontSize: 14,
+  },
+  loginText: {
+    color: '#EF4444',
+    fontWeight: '600',
   },
 });

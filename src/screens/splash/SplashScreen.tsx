@@ -14,21 +14,10 @@ export default function Splash({ navigation }: any) {
   const checkAuth = async () => {
     try {
       console.log('Checking auth...');
-      const { data } = await supabase.auth.getSession();
-      console.log('Session data:', data);
-      
-      // Display logo for 1.5 seconds
+      // FOR TESTING: Skip to UserDashboard directly
       setTimeout(() => {
-        const email = (data.session?.user?.email || '').toLowerCase();
-        const isAdminMeta = !!data.session?.user?.user_metadata?.is_admin;
-        console.log('Navigating based on auth...');
-        if (isAdminMeta || (email && email === ADMIN_EMAIL.toLowerCase())) {
-          navigation.replace('AdminDashboard');
-        } else if (data.session) {
-          navigation.replace('UserDashboard');
-        } else {
-          navigation.replace('Login');
-        }
+        console.log('⚡ DIRECT ACCESS TO USERDASHBOARD FOR TESTING');
+        navigation.replace('UserDashboard');
       }, 1500);
     } catch (error) {
       console.log('Auth error:', error);

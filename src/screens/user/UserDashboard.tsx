@@ -12,11 +12,26 @@ import {
   Image,
   ActivityIndicator,
   TextInput,
+  Modal,
+  BackHandler,
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useTheme } from '../../theme/ThemeContext';
 import { BottomNavigation } from '../../components/BottomNavigation';
+import { FeedbackTab } from './FeedbackTab';
 import { SideDrawer } from '../../components/SideDrawer';
+import { styles } from './styles';
+import { HomeTab } from './HomeTab';
+import StudentHomeTab from './StudentHomeTab';
+import HomeStaff from './HomeStaff';
+import { MenuTab } from './MenuTab';
+import { OrdersTab } from './OrdersTab';
+import { WalletTab } from './WalletTab';
+import { ProfileTab } from './ProfileTab';
+import { WishlistTab } from './WishlistTab';
+import { CartTab } from './CartTab';
+import ReservationsTab from './ReservationsTab';
+import { loadCart as loadStoredCart, saveCart as saveStoredCart, clearCart as clearStoredCart } from '../../lib/cartStorage';
 
 interface MenuItem {
   id: string;
@@ -25,6 +40,7 @@ interface MenuItem {
   category: string;
   image?: string;
   available?: boolean;
+  food_type?: 'veg' | 'non-veg';
 }
 
 interface CartItem extends MenuItem {
@@ -35,25 +51,255 @@ interface Order {
   id: string;
   items: CartItem[];
   totalPrice: number;
-  status: 'Pending' | 'Preparing' | 'Ready' | 'Completed';
+  status: 'Pending' | 'Preparing' | 'Ready' | 'Completed' | 'Cancelled';
   timestamp: string;
+  created_at?: string;
 }
 
-export default function UserDashboard({ navigation }: any) {
-  const { colors, isDark, tokens } = useTheme();
+export default function UserDashboard({ navigation, route }: any) {
+  const { colors, isDark, toggleTheme } = useTheme();
+    const [userRole, setUserRole] = useState<string>('Student');
   const [activeTab, setActiveTab] = useState('home');
+  const [showPopularInMenu, setShowPopularInMenu] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [walletBalance] = useState(500);
-  const [closingTime] = useState('4:45 PM');
+  const [openingTime, setOpeningTime] = useState('9:00 am');
+  const [closingTime, setClosingTime] = useState('4:45 pm');
   const [closingCountdown, setClosingCountdown] = useState<string>('');
+  const [canteenStatus, setCanteenStatus] = useState<'closed' | 'opening-soon' | 'open'>('open');
+  const [userName, setUserName] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+
+  // Helper function to format time to lowercase am/pm
+  const formatTime = (timeStr: string): string => {
+    if (!timeStr) return timeStr;
+    // Convert "9:00 AM" or "09:00 AM" to "9:00 am"
+    return timeStr.replace(/\s*(AM|PM|am|pm)$/i, (match) => ' ' + match.trim().toLowerCase());
+  };
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [wishlistItems, setWishlistItems] = useState<string[]>([]);
+  
+  // Reservation modal states
+  const [showReservationModal, setShowReservationModal] = useState(false);
+  const [pendingPaymentData, setPendingPaymentData] = useState<any>(null);
+  const [selectedResDate, setSelectedResDate] = useState<Date | null>(null);
+  const [selectedResTimeSlot, setSelectedResTimeSlot] = useState('');
+  const [selectedResArea, setSelectedResArea] = useState('');
+  const [selectedResSeat, setSelectedResSeat] = useState('');
+  const [resNumberOfSeats, setResNumberOfSeats] = useState(1);
+  const [resPurpose, setResPurpose] = useState('');
+  const [resSpecialRequests, setResSpecialRequests] = useState('');
+  const [notificationModalVisible, setNotificationModalVisible] = useState(false);
+
+  // Load persisted cart on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await loadStoredCart<CartItem[]>();
+        if (stored && Array.isArray(stored)) {
+          setCart(stored);
+        }
+      } catch (err) {
+        console.log('Cart restore skipped:', err);
+      }
+    })();
+  }, []);
+
+  // Hardware back button handler
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      console.log('🔙 Hardware back button pressed');
+      console.log('Current state - showPopularInMenu:', showPopularInMenu);
+      
+      if (showPopularInMenu) {
+        console.log('🔙 Closing Popular view');
+        setShowPopularInMenu(false);
+        setActiveTab('home');
+        console.log('✅ Popular view closed, switched to home tab');
+        return true; // Prevent default back behavior
+      }
+      
+      // Allow default back behavior if Popular view is not open
+      return false;
+    });
+
+    return () => backHandler.remove();
+  }, [showPopularInMenu]);
+
+  // Load existing wishlist IDs on mount so heart states match server
+  useEffect(() => {
+    const loadWishlist = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data, error } = await supabase
+        .from('wishlist')
+        .select('menu_item_id')
+        .eq('user_id', user.id);
+      if (!error && data) {
+        setWishlistItems(data.map((row: any) => row.menu_item_id));
+      }
+    };
+
+    loadWishlist();
+  }, []);
+
+  // Load logged-in user's name and email
+  useEffect(() => {
+    const loadUserData = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        // Get the user's name from profiles table
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('name, role')
+          .eq('id', user.id)
+          .maybeSingle();
+        
+        console.log('UserDashboard - Raw profile data from DB:', profileData);
+        
+        // Use name from profile, or fall back to email name, or 'User'
+        const displayName = profileData?.name || user.user_metadata?.full_name || user.email?.split('@')[0] || 'User';
+        setUserName(displayName);
+        const role = (profileData as { name?: string; role?: string })?.role || 'Student';
+        console.log('UserDashboard - Fetched role from database:', role);
+        setUserRole(role);
+        setUserEmail(user.email || '');
+      }
+    };
+
+    loadUserData();
+  }, []);
+
+  // Fetch business hours from database
+  useEffect(() => {
+    const fetchBusinessHours = async () => {
+      const { data, error } = await supabase
+        .from('business_settings')
+        .select('opening_time, closing_time')
+        .limit(1)
+        .maybeSingle();
+      
+      if (!error && data) {
+        // Trim and ensure proper format
+        const openTime = formatTime((data.opening_time || '9:00 AM').trim());
+        const closeTime = formatTime((data.closing_time || '4:45 PM').trim());
+        
+        console.log('=== FETCHED BUSINESS HOURS ===');
+        console.log('Raw opening_time from DB:', data.opening_time);
+        console.log('Raw closing_time from DB:', data.closing_time);
+        console.log('Processed opening_time:', openTime);
+        console.log('Processed closing_time:', closeTime);
+        
+        setOpeningTime(openTime);
+        setClosingTime(closeTime);
+      } else {
+        console.error('Error fetching business hours:', error);
+        // Set defaults
+        setOpeningTime('9:00 am');
+        setClosingTime('4:45 pm');
+      }
+    };
+
+    fetchBusinessHours();
+  }, []);
+
+  // Countdown timer that updates every second
+  useEffect(() => {
+    const updateCountdown = () => {
+      const now = new Date();
+      // Use 'numeric' instead of '2-digit' to avoid leading zeros (9:00 am instead of 09:00 am)
+      const currentTime = formatTime(now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }));
+      
+      const parseTime = (timeStr: string) => {
+        if (!timeStr) return null;
+        // Handle both "9:00 AM" and "09:00 AM" formats
+        const match = timeStr.trim().match(/(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)/i);
+        if (!match) {
+          console.warn('Invalid time format:', timeStr);
+          return null;
+        }
+        let hours = parseInt(match[1]);
+        const minutes = parseInt(match[2]);
+        const period = match[3].toUpperCase();
+        
+        // Convert to 24-hour format
+        if (period === 'PM' && hours !== 12) hours += 12;
+        if (period === 'AM' && hours === 12) hours = 0;
+        
+        return hours * 60 + minutes;
+      };
+
+      const currentMinutes = parseTime(currentTime);
+      const openingMinutes = parseTime(openingTime);
+      const closingMinutes = parseTime(closingTime);
+
+      console.log('=== TIME CHECK ===');
+      console.log('Current time:', currentTime, '→', currentMinutes, 'mins');
+      console.log('Opening time:', openingTime, '→', openingMinutes, 'mins');
+      console.log('Closing time:', closingTime, '→', closingMinutes, 'mins');
+
+      if (currentMinutes !== null && openingMinutes !== null && closingMinutes !== null) {
+        if (currentMinutes < openingMinutes) {
+          // Before opening - show countdown to opening
+          const minutesUntilOpen = openingMinutes - currentMinutes;
+          const hours = Math.floor(minutesUntilOpen / 60);
+          const mins = minutesUntilOpen % 60;
+          const secs = 60 - now.getSeconds();
+          setClosingCountdown(`${hours}h ${mins}m ${secs}s`);
+          setCanteenStatus('opening-soon');
+          console.log('Status: OPENING SOON -', minutesUntilOpen, 'minutes until open');
+        } else if (currentMinutes >= closingMinutes) {
+          // After closing - show closed message
+          setClosingCountdown('Closed for today');
+          setCanteenStatus('closed');
+          console.log('Status: CLOSED');
+        } else {
+          // During business hours - show countdown to closing
+          const minutesUntilClose = closingMinutes - currentMinutes;
+          const hours = Math.floor(minutesUntilClose / 60);
+          const mins = minutesUntilClose % 60;
+          const secs = 60 - now.getSeconds();
+          setClosingCountdown(`${hours}h ${mins}m ${secs}s`);
+          setCanteenStatus('open');
+          console.log('Status: OPEN -', minutesUntilClose, 'minutes until close');
+        }
+      } else {
+        console.warn('Could not parse times properly');
+        console.warn('Current:', currentMinutes, 'Opening:', openingMinutes, 'Closing:', closingMinutes);
+      }
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000); // Update every second
+
+    return () => clearInterval(interval);
+  }, [openingTime, closingTime]);
 
   const addToCart = (item: MenuItem) => {
+    // Check if canteen is closed or opening soon
+    if (canteenStatus === 'opening-soon') {
+      Alert.alert(
+        'Not Yet Open',
+        `Orders will be available from ${openingTime}. Please try again later!`,
+        [{ text: 'OK', style: 'cancel' }]
+      );
+      return;
+    }
+
+    if (canteenStatus === 'closed') {
+      Alert.alert(
+        'Canteen Closed',
+        `The canteen is currently closed. It will reopen tomorrow at ${openingTime}. See you then! 🍽️`,
+        [{ text: 'OK', style: 'cancel' }]
+      );
+      return;
+    }
+
     const existingItem = cart.find((cartItem) => cartItem.id === item.id);
     if (existingItem) {
       setCart(
@@ -72,79 +318,285 @@ export default function UserDashboard({ navigation }: any) {
     setCart(cart.filter((item) => item.id !== itemId));
   };
 
+  const updateCartQuantity = (itemId: string, newQuantity: number) => {
+    if (newQuantity <= 0) {
+      removeFromCart(itemId);
+    } else {
+      setCart(
+        cart.map((item) =>
+          item.id === itemId ? { ...item, quantity: newQuantity } : item
+        )
+      );
+    }
+  };
+
   const getTotalPrice = () => {
     return cart.reduce((total, item) => total + item.price * item.quantity, 0);
   };
 
-  const placeOrder = async () => {
+  // Persist cart when it changes
+  useEffect(() => {
+    saveStoredCart(cart).catch(() => {});
+  }, [cart]);
+
+  const cancelOrder = async (orderId: string) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Alert.alert('Error', 'Please login to cancel order');
+        return;
+      }
+
+      // Check order status before cancelling
+      const { data: order, error: fetchError } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('id', orderId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (fetchError || !order) {
+        Alert.alert('Error', 'Order not found');
+        return;
+      }
+
+      // Only allow cancelling Pending orders (case-insensitive)
+      const orderStatus = order.status?.toLowerCase().trim();
+      if (orderStatus !== 'pending') {
+        Alert.alert(
+          'Cannot Cancel',
+          `Order is already ${order.status}. You can only cancel pending orders.`,
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      Alert.alert(
+        'Cancel Order',
+        'Are you sure you want to cancel this order?',
+        [
+          { text: 'No', style: 'cancel' },
+          {
+            text: 'Yes, Cancel',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                // Get order items first to restore stock
+                const { data: orderItems, error: itemsError } = await supabase
+                  .from('order_items')
+                  .select('menu_item_id, qty')
+                  .eq('order_id', orderId);
+
+                console.log('📋 Order items to restore:', orderItems);
+
+                if (!itemsError && orderItems && orderItems.length > 0) {
+                  // Restore stock for each item
+                  for (const item of orderItems) {
+                    const { data: currentItem } = await supabase
+                      .from('menu_items')
+                      .select('stock_quantity')
+                      .eq('id', item.menu_item_id)
+                      .single();
+
+                    if (currentItem) {
+                      const newStock = (currentItem.stock_quantity || 0) + item.qty;
+                      console.log(`⬆️  Restoring stock - Item: ${item.menu_item_id}, Old: ${currentItem.stock_quantity}, Adding: ${item.qty}, New: ${newStock}`);
+                      
+                      const { error: updateError } = await supabase
+                        .from('menu_items')
+                        .update({ stock_quantity: newStock })
+                        .eq('id', item.menu_item_id);
+                      
+                      if (updateError) {
+                        console.error('❌ Stock update error:', updateError);
+                      } else {
+                        console.log('✅ Stock updated successfully');
+                      }
+                    }
+                  }
+                }
+
+                // Update order status to Cancelled in database
+
+                const { error: statusError } = await supabase
+                  .from('orders')
+                  .update({ status: 'Cancelled' })
+                  .eq('id', orderId)
+                  .eq('user_id', user.id);
+
+                if (statusError) {
+                  console.error('❌ Failed to update order status:', statusError);
+                  console.error('Status Error Details:', statusError.message, statusError.code);
+                } else {
+                  console.log('✅ Order status updated to Cancelled');
+                  // Fetch order details for email
+                  const { data: cancelledOrder, error: fetchOrderError } = await supabase
+                    .from('orders')
+                    .select('id, token_number, created_at, total_price, status')
+                    .eq('id', orderId)
+                    .single();
+                  if (user.email && cancelledOrder) {
+                    const { data: orderItemsData } = await supabase
+                      .from('order_items')
+                      .select('menu_item_id, quantity, menu_items(name, price)')
+                      .eq('order_id', orderId);
+                    // Format items for email
+                    const items = (orderItemsData || []).map((oi: any) => ({
+                      name: oi.menu_items?.name || '',
+                      quantity: oi.quantity,
+                      price: oi.menu_items?.price || 0,
+                    }));
+                    // Send cancellation email
+                    try {
+                      const sendReceiptEmail = require('../../services/emailService').sendReceiptEmail;
+                      await sendReceiptEmail({
+                        userEmail: user.email,
+                        userName: user.user_metadata?.full_name || user.email.split('@')[0],
+                        order: {
+                          id: cancelledOrder.id,
+                          tokenNumber: cancelledOrder.token_number,
+                          timestamp: cancelledOrder.created_at ? new Date(cancelledOrder.created_at).toLocaleString() : new Date().toLocaleString(),
+                          status: 'Cancelled',
+                          items,
+                          totalPrice: cancelledOrder.total_price,
+                        },
+                      });
+                    } catch (emailErr) {
+                      console.error('Failed to send cancellation email:', emailErr);
+                    }
+                  } else {
+                    console.warn('Cancellation email not sent: user.email or cancelledOrder is missing.');
+                  }
+                }
+
+                console.log('🎯 About to refresh...');
+                
+                // Update local state to mark as cancelled
+                setOrders(orders.map(o => 
+                  o.id === orderId ? { ...o, status: 'Cancelled' as const } : o
+                ));
+
+                // Refresh menu items to reflect updated stock
+                await refreshMenuItems();
+
+                Alert.alert('Success', '✅ Order cancelled successfully! Stock restored.');
+              } catch (err) {
+                console.error('Cancel error:', err);
+                Alert.alert('Error', 'Failed to cancel order');
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      console.error('Cancel order error:', error);
+      Alert.alert('Error', 'Failed to cancel order');
+    }
+  };
+
+  const placeOrder = async (pickupHour?: number, pickupMinute?: number, pickupPeriod?: 'AM' | 'PM') => {
     if (cart.length === 0) {
       Alert.alert('Empty Cart', 'Please add items before placing an order');
       return;
     }
 
+    // Check if ordering is allowed based on canteen status
+    if (canteenStatus === 'opening-soon') {
+      Alert.alert(
+        '🔒 Not Open Yet',
+        `Orders will be available from ${openingTime}. ${closingCountdown}`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    if (canteenStatus === 'closed') {
+      Alert.alert(
+        '🔒 Ordering Closed',
+        `Sorry, orders are closed for today. We accept orders until ${closingTime}. Please come back tomorrow!`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    // Require login before navigating to Payment
     try {
-      // Get current user
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        Alert.alert('Error', 'You must be logged in to place an order');
+        Alert.alert('Login Required', 'Please log in to place your order.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Login', onPress: () => navigation.replace('Login') },
+        ]);
         return;
       }
+    } catch {}
 
-      const totalPrice = getTotalPrice();
+    const totalPrice = getTotalPrice();
+    const pickupTime = pickupHour && pickupMinute && pickupPeriod 
+      ? `${pickupHour}:${pickupMinute.toString().padStart(2, '0')} ${pickupPeriod}`
+      : undefined;
+    
+    // Store payment data and show reservation modal
+    setPendingPaymentData({
+      items: cart.map(ci => ({ id: ci.id, name: ci.name, price: ci.price, quantity: ci.quantity })),
+      totalPrice,
+      pickupTime,
+    });
 
-      // Insert order into Supabase
-      const { data: orderData, error: orderError } = await supabase
-        .from('orders')
+    // Ask if user wants to reserve a seat
+    Alert.alert(
+      '🪑 Reserve a Seat?',
+      'Would you like to reserve a seat in the canteen?',
+      [
+        {
+          text: 'No, Skip',
+          style: 'cancel',
+          onPress: () => {
+            // Go directly to payment without reservation
+            navigation.navigate('Payment', {
+              items: cart.map(ci => ({ id: ci.id, name: ci.name, price: ci.price, quantity: ci.quantity })),
+              totalPrice,
+              pickupTime,
+              openingTime,
+              closingTime,
+            });
+          },
+        },
+        {
+          text: 'Yes, Reserve',
+          onPress: () => {
+            // Show reservation modal
+            setShowReservationModal(true);
+          },
+        },
+      ]
+    );
+  };
+
+  const toggleWishlist = async (item: MenuItem) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const isInWishlist = wishlistItems.includes(item.id);
+
+    if (isInWishlist) {
+      await supabase
+        .from('wishlist')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('menu_item_id', item.id);
+      setWishlistItems(wishlistItems.filter(id => id !== item.id));
+    } else {
+      await supabase
+        .from('wishlist')
         .insert({
           user_id: user.id,
-          total_price: totalPrice,
-          status: 'Pending',
-        })
-        .select('id')
-        .single();
-
-      if (orderError) {
-        console.error('❌ Error inserting order:', orderError);
-        Alert.alert('Error', 'Failed to place order. Please try again.');
-        return;
-      }
-
-      if (!orderData) {
-        Alert.alert('Error', 'Failed to create order');
-        return;
-      }
-
-      // Insert order items
-      const orderItems = cart.map((item) => ({
-        order_id: orderData.id,
-        menu_item_id: item.id,
-        quantity: item.quantity,
-      }));
-
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
-
-      if (itemsError) {
-        console.error('❌ Error inserting order items:', itemsError);
-        Alert.alert('Error', 'Order created but failed to save items.');
-        return;
-      }
-
-      // Update local state
-      const newOrder: Order = {
-        id: orderData.id,
-        items: cart,
-        totalPrice: totalPrice,
-        status: 'Pending',
-        timestamp: new Date().toLocaleString(),
-      };
-      setOrders([newOrder, ...orders]);
-      setCart([]);
-      Alert.alert('Success', '✅ Order placed successfully! Admin will prepare it soon.');
-    } catch (e) {
-      console.error('❌ Error placing order:', e);
-      Alert.alert('Error', 'Failed to place order. Please try again.');
+          menu_item_id: item.id,
+          item_name: item.name,
+          item_price: item.price,
+          item_image: item.image,
+        });
+      setWishlistItems([...wishlistItems, item.id]);
     }
   };
 
@@ -153,59 +605,299 @@ export default function UserDashboard({ navigation }: any) {
     navigation.replace('Login');
   };
 
-  // Fetch menu items from database
+  // Function to fetch and refresh menu items
+  const refreshMenuItems = async () => {
+    try {
+      console.log('🔄 Refreshing menu items after cancel...');
+      const { data, error } = await supabase.from('menu_items').select('*');
+      if (error) {
+        console.error('❌ Error fetching menu items:', error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        console.log('✅ Fresh menu items fetched:', data.length, 'items');
+        const mappedItems = data.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          category: item.category,
+          description: item.description,
+          image: item.image || item.image_url,
+          available: item.available,
+          stock_quantity: item.stock_quantity,
+        }));
+        
+        // Log stock quantities for verification
+        mappedItems.forEach(item => {
+          console.log(`  📦 ${item.name}: stock = ${item.stock_quantity}`);
+        });
+        
+        const availableItems = mappedItems.filter((item: any) => item.available !== false);
+        setMenuItems(availableItems);
+        console.log('✅ Menu items state updated');
+      }
+    } catch (e) {
+      console.error('❌ Exception fetching menu items:', e);
+    }
+  };
+
+  useEffect(() => {
+    // Handle return from Payment/Token screens to append new order and clear cart
+    const params = route?.params;
+    if (params?.newOrder) {
+      setOrders((prev) => [params.newOrder as Order, ...prev]);
+    }
+    if (params?.clearCart) {
+      setCart([]);
+      clearStoredCart().catch(() => {});
+    }
+    if (params?.newOrder || params?.clearCart) {
+      // Clear params so it doesn't re-run
+      navigation.setParams({ newOrder: undefined, clearCart: undefined });
+    }
+  }, [route?.params]);
+
   useEffect(() => {
     const fetchMenuItems = async () => {
       try {
         setLoadingMenu(true);
-        console.log('🔄 Fetching menu items from database...');
-        
-        const { data, error } = await supabase
-          .from('menu_items')
-          .select('*');
-
-        console.log('📊 Query result:', { data, error });
-
+        const { data, error } = await supabase.from('menu_items').select('*');
         if (error) {
-          console.error('❌ Error fetching menu items:', error);
+          console.error('Error fetching menu items:', error);
           setMenuItems([]);
         } else if (data && data.length > 0) {
-          console.log('✅ Found', data.length, 'items in database');
-          // Filter for available items
-          const availableItems = data.filter((item: any) => item.available !== false);
+          // Map data and handle both 'image' and 'image_url' column names
+          const mappedItems = data.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            category: item.category,
+            description: item.description,
+            image: item.image || item.image_url, // Handle both column names
+            available: item.available,
+            stock_quantity: item.stock_quantity,
+            food_type: item.food_type || 'veg', // Default to veg if not specified
+          }));
+          const availableItems = mappedItems.filter((item: any) => item.available !== false);
           setMenuItems(availableItems);
+          console.log('Menu items fetched:', availableItems);
         } else {
-          console.log('⚠️ No items found in database');
           setMenuItems([]);
         }
       } catch (e) {
-        console.error('❌ Exception fetching menu items:', e);
+        console.error('Exception fetching menu items:', e);
         setMenuItems([]);
       } finally {
         setLoadingMenu(false);
       }
     };
-
     fetchMenuItems();
+
+    // Subscribe to realtime changes on menu_items to keep UI fresh
+    const menuChannel = supabase
+      .channel('menu-items-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, () => {
+        fetchMenuItems();
+      })
+      .subscribe();
+
+    return () => {
+      try { supabase.removeChannel(menuChannel); } catch {}
+    };
   }, []);
 
+  // Fetch user's orders and subscribe to real-time updates
+  useEffect(() => {
+    const fetchAndSubscribeOrders = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Initial fetch
+      const fetchOrders = async () => {
+        try {
+          const { data: ordersData } = await supabase
+            .from('orders')
+            .select('id,status,total_price,created_at,token_number')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false });
+
+          if (ordersData && ordersData.length > 0) {
+            // Fetch order items for each order with menu item details
+            const ordersWithItems = await Promise.all(
+              ordersData.map(async (order: any) => {
+                try {
+                  const { data: itemsData } = await supabase
+                    .from('order_items')
+                    .select(`
+                      id,
+                      quantity,
+                      menu_item_id,
+                      menu_items!inner(id, name, price)
+                    `)
+                    .eq('order_id', order.id);
+
+                  const items = (itemsData || []).map((item: any) => ({
+                    id: item.menu_item_id,
+                    name: item.menu_items?.name || 'Unknown Item',
+                    price: Number(item.menu_items?.price || 0),
+                    quantity: item.quantity || 1,
+                    category: '',
+                  }));
+
+                  return {
+                    id: order.id,
+                    items,
+                    totalPrice: Number(order.total_price || 0),
+                    status: order.status,
+                    timestamp: order.created_at,
+                    created_at: order.created_at,
+                    total_price: order.total_price,
+                    token_number: order.token_number,
+                  };
+                } catch (itemErr) {
+                  console.warn(`Could not fetch items for order ${order.id}:`, itemErr);
+                  // Return order without items if fetching items fails
+                  return {
+                    id: order.id,
+                    items: [],
+                    totalPrice: Number(order.total_price || 0),
+                    status: order.status,
+                    timestamp: order.created_at,
+                    created_at: order.created_at,
+                    total_price: order.total_price,
+                    token_number: order.token_number,
+                  };
+                }
+              })
+            );
+            setOrders(ordersWithItems);
+          }
+        } catch (err) {
+          console.error('Error fetching orders:', err);
+        }
+      };
+
+      await fetchOrders();
+
+      // Real-time subscription
+      const channel = supabase
+        .channel('user-orders-realtime')
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `user_id=eq.${user.id}`
+        }, () => {
+          console.log('📡 Order updated, refreshing...');
+          fetchOrders();
+        })
+        .subscribe();
+
+      return () => {
+        try { supabase.removeChannel(channel); } catch {}
+      };
+    };
+
+    const cleanup = fetchAndSubscribeOrders();
+    return () => {
+      if (cleanup && typeof cleanup.then === 'function') {
+        cleanup.then(fn => { if (typeof fn === 'function') fn(); });
+      }
+    };
+  }, []);
+
+  // Handle optional seat reservation during checkout
+  const submitReservationThenPayment = async () => {
+    if (!selectedResSeat || !selectedResTimeSlot || !selectedResArea || !resPurpose.trim() || !selectedResDate) {
+      Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Alert.alert('Error', 'Please login to make a reservation');
+        return;
+      }
+
+      const dateStr = selectedResDate?.toISOString().split('T')[0] ?? '';
+      if (!dateStr) {
+        Alert.alert('Error', 'Invalid date selected');
+        return;
+      }
+      
+      // Check if seat already reserved
+      const { data: existingReservations, error: checkError } = await supabase
+        .from('seat_reservations')
+        .select('id')
+        .eq('seat_number', selectedResSeat)
+        .eq('reservation_date', dateStr)
+        .eq('reservation_time_slot', selectedResTimeSlot)
+        .eq('status', 'Confirmed');
+
+      if (checkError) throw checkError;
+
+      if (existingReservations && existingReservations.length > 0) {
+        Alert.alert('Not Available', 'This seat is already reserved for the selected time slot');
+        return;
+      }
+
+      // Create reservation
+      const { error: insertError } = await supabase
+        .from('seat_reservations')
+        .insert({
+          user_id: user.id,
+          seat_number: selectedResSeat,
+          reservation_date: dateStr,
+          reservation_time_slot: selectedResTimeSlot,
+          seating_area: selectedResArea,
+          number_of_seats: resNumberOfSeats as unknown as string,
+          purpose: resPurpose.trim(),
+          status: 'Confirmed',
+        });
+
+      if (insertError) throw insertError;
+
+      // Reservation successful, now go to payment
+      setShowReservationModal(false);
+      Alert.alert('✅ Seat Reserved', 'Your seat has been reserved! Proceeding to payment...');
+      
+      // Navigate to payment
+      if (pendingPaymentData) {
+        navigation.navigate('Payment', {
+          items: pendingPaymentData.items,
+          totalPrice: pendingPaymentData.totalPrice,
+          pickupTime: pendingPaymentData.pickupTime,
+          openingTime,
+          closingTime,
+        });
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to create reservation');
+    }
+  };
+
   const drawerItems = [
-    { id: 'notifications', label: 'Notifications', icon: 'notifications', onPress: () => {} },
-    { id: 'wallet', label: 'Wallet', icon: 'wallet', onPress: () => {} },
-    { id: 'help', label: 'Help & Support', icon: 'help', onPress: () => {} },
-    { id: 'about', label: 'About', icon: 'about', onPress: () => {} },
+    { id: 'notifications', label: 'Notifications', icon: 'notifications', onPress: () => { setDrawerVisible(false); setNotificationModalVisible(true); } },
+    { id: 'reservations', label: 'Seat Reservations', icon: 'calendar', onPress: () => setActiveTab('reservations') },
+    { id: 'wallet', label: 'Loyalty Points', icon: 'star', onPress: () => setActiveTab('wallet') },
+    { id: 'feedback', label: 'Feedback', icon: 'feedback', onPress: () => setActiveTab('feedback') },
+    { id: 'help', label: 'Help & Support', icon: 'help', onPress: () => setActiveTab('profile') },
+    { id: 'about', label: 'About', icon: 'about', onPress: () => setActiveTab('profile') },
     { id: 'logout', label: 'Logout', icon: 'logout', danger: true, onPress: logout },
   ];
 
   const tabs = [
     { id: 'home', label: 'Home', icon: 'home' },
     { id: 'menu', label: 'Menu', icon: 'menu' },
+    { id: 'cart', label: 'Cart', icon: 'cart', badgeCount: cart.length },
     { id: 'orders', label: 'Orders', icon: 'orders' },
-    { id: 'wallet', label: 'Wallet', icon: 'wallet' },
+    { id: 'wishlist', label: 'Wishlist', icon: 'wishlist' },
+    { id: 'wallet', label: 'Loyalty', icon: 'star' },
     { id: 'profile', label: 'Profile', icon: 'profile' },
   ];
 
-  // Parse closing time string like "08:00 PM" into a Date (today)
   const closingDate: Date | null = useMemo(() => {
     try {
       const match = closingTime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
@@ -223,13 +915,11 @@ export default function UserDashboard({ navigation }: any) {
     }
   }, [closingTime]);
 
-  // Live countdown updater
   useEffect(() => {
     if (!closingDate) {
       setClosingCountdown('—');
       return;
     }
-
     const formatDuration = (ms: number) => {
       if (ms <= 0) return 'Closed';
       const totalSeconds = Math.floor(ms / 1000);
@@ -238,1437 +928,447 @@ export default function UserDashboard({ navigation }: any) {
       const seconds = totalSeconds % 60;
       return `${hours}h ${minutes}m ${seconds}s`;
     };
-
-    // Initial set
     setClosingCountdown(formatDuration(closingDate.getTime() - Date.now()));
-
     const interval = setInterval(() => {
       const remaining = closingDate.getTime() - Date.now();
       setClosingCountdown(formatDuration(remaining));
     }, 1000);
-
     return () => clearInterval(interval);
   }, [closingDate]);
 
   const isSearching = searchQuery.trim().length > 0;
-
   const filteredMenuItems = useMemo(() => {
-    const base = selectedCategory
-      ? menuItems.filter((item) => item.category === selectedCategory)
-      : menuItems;
-
+    const base = selectedCategory ? menuItems.filter((item) => item.category === selectedCategory) : menuItems;
     const query = searchQuery.trim().toLowerCase();
     if (!query) return base;
-
-    const matches = base.filter(
-      (item) =>
-        item.name.toLowerCase().includes(query) ||
-        item.category.toLowerCase().includes(query)
-    );
-
-    const startsWith = matches
-      .filter((item) => item.name.toLowerCase().startsWith(query))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const contains = matches
-      .filter((item) => !item.name.toLowerCase().startsWith(query))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
+    const matches = base.filter((item) => item.name.toLowerCase().includes(query) || item.category.toLowerCase().includes(query));
+    const startsWith = matches.filter((item) => item.name.toLowerCase().startsWith(query)).sort((a, b) => a.name.localeCompare(b.name));
+    const contains = matches.filter((item) => !item.name.toLowerCase().startsWith(query)).sort((a, b) => a.name.localeCompare(b.name));
     return [...startsWith, ...contains];
   }, [menuItems, searchQuery, selectedCategory]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}> 
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-      <SideDrawer
-        visible={drawerVisible}
-        onClose={() => setDrawerVisible(false)}
-        items={drawerItems}
-        userName="Chandler"
-        userEmail="chandler@university.edu"
-      />
+      <SideDrawer visible={drawerVisible} onClose={() => setDrawerVisible(false)} items={drawerItems} userName={userName} userEmail={userEmail} />
 
+      {/* Removed HomeTab for students. Only StudentHome is rendered. */}
       {activeTab === 'home' && (
-        <ScrollView style={[styles.content, { backgroundColor: colors.background }]}>
-          {/* Modern Header */}
-          <View style={[styles.header, { backgroundColor: colors.surface }]}>
-            <View style={styles.headerTop}>
-              <TouchableOpacity onPress={() => setDrawerVisible(true)} style={[styles.menuButton, { backgroundColor: colors.primary }]}>
-                <Text style={styles.menuIcon}>☰</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.headerContent}>
-              <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>Welcome to</Text>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>DineDesk</Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>Order your favorite meals instantly</Text>
-            </View>
-          </View>
-
-          {/* Quick Stats Cards */}
-          <View style={styles.statsContainer}>
-            <View style={[styles.statCard, { backgroundColor: colors.surface }]}>
-              <View style={[styles.statIconCircle, { backgroundColor: '#10B98120' }]}>
-                <Text style={styles.statEmoji}>💰</Text>
-              </View>
-              <View style={styles.statInfo}>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Wallet</Text>
-                <Text style={[styles.statValue, { color: '#10B981' }]}>₹{walletBalance}</Text>
-              </View>
-            </View>
-
-            <View style={[styles.statCard, { backgroundColor: colors.surface }]}>
-              <View style={[styles.statIconCircle, { backgroundColor: '#8B5CF620' }]}>
-                <Text style={styles.statEmoji}>🍽️</Text>
-              </View>
-              <View style={styles.statInfo}>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Orders</Text>
-                <Text style={[styles.statValue, { color: colors.primary }]}>{orders.length}</Text>
-              </View>
-            </View>
-
-            <View style={[styles.statCard, { backgroundColor: colors.surface }]}>
-              <View style={[styles.statIconCircle, { backgroundColor: '#F59E0B20' }]}>
-                <Text style={styles.statEmoji}>⏳</Text>
-              </View>
-              <View style={styles.statInfo}>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Ready</Text>
-                <Text style={[styles.statValue, { color: colors.warning }]}>{orders.filter((o) => o.status === 'Ready').length}</Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Status Alert */}
-          {closingCountdown !== 'Closed' && (
-            <View style={[styles.statusAlert, { backgroundColor: colors.warning + '15', borderColor: colors.warning }]}>
-              <View style={styles.statusAlertIcon}>
-                <Text style={styles.alertEmoji}>⏰</Text>
-              </View>
-              <View style={styles.statusAlertContent}>
-                <Text style={[styles.statusAlertTitle, { color: colors.text }]}>Kitchen closes in</Text>
-                <Text style={[styles.statusAlertTime, { color: colors.warning }]}>{closingCountdown}</Text>
-              </View>
-            </View>
-          )}
-
-          {/* Quick Order Section */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Order</Text>
-              <TouchableOpacity>
-                <Text style={[styles.viewAll, { color: colors.primary }]}>View All →</Text>
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={menuItems.slice(0, 5)}
-              horizontal
-              scrollEnabled
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.quickOrderCard, { backgroundColor: colors.surface }]}
-                  onPress={() => addToCart(item)}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.quickCardIcon, { backgroundColor: colors.primary + '10' }]}>
-                    <Text style={styles.quickCardEmoji}>🍜</Text>
-                  </View>
-                  <Text style={[styles.quickCardName, { color: colors.text }]} numberOfLines={2}>{item.name}</Text>
-                  <Text style={[styles.quickCardPrice, { color: colors.primary }]}>₹{item.price}</Text>
-                </TouchableOpacity>
-              )}
-              keyExtractor={(item) => item.id}
-              showsHorizontalScrollIndicator={false}
-            />
-          </View>
-
-          {/* Recent Orders */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Your Recent Orders</Text>
-              <Text style={[styles.orderCount, { color: colors.textSecondary }]}>{orders.length} total</Text>
-            </View>
-            {orders.length === 0 ? (
-              <View style={[styles.emptyState, { backgroundColor: colors.surface }]}>
-                <Text style={styles.emptyEmoji}>📋</Text>
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>No Orders Yet</Text>
-                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>Start ordering your favorite meals</Text>
-              </View>
-            ) : (
-              orders.slice(0, 3).map((order) => (
-                <View key={order.id} style={[styles.orderCard, { backgroundColor: colors.surface }]}>
-                  <View style={styles.orderCardTop}>
-                    <View style={styles.orderInfo}>
-                      <Text style={[styles.orderId, { color: colors.text }]}>Order #{order.id}</Text>
-                      <Text style={[styles.orderTime, { color: colors.textSecondary }]}>🕐 {order.timestamp}</Text>
-                    </View>
-                    <View style={[
-                      styles.orderStatusBadge,
-                      { backgroundColor: order.status === 'Completed' ? colors.success + '20' : order.status === 'Ready' ? colors.primary + '20' : colors.warning + '20' }
-                    ]}>
-                      <Text style={[
-                        styles.orderStatusText,
-                        { color: order.status === 'Completed' ? colors.success : order.status === 'Ready' ? colors.primary : colors.warning }
-                      ]}>{order.status}</Text>
-                    </View>
-                  </View>
-                  <View style={[styles.orderCardBottom, { borderTopColor: colors.border }]}>
-                    <Text style={[styles.itemsCount, { color: colors.textSecondary }]}>{order.items.length} items</Text>
-                    <Text style={[styles.orderPrice, { color: colors.text }]}>₹{order.totalPrice}</Text>
-                  </View>
-                </View>
-              ))
-            )}
-          </View>
-
-          {/* Features Section */}
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Features</Text>
-            <View style={styles.featuresGrid}>
-              <TouchableOpacity style={[styles.featureCard, { backgroundColor: colors.surface }]}>
-                <View style={[styles.featureIcon, { backgroundColor: '#EC489920' }]}>
-                  <Text style={styles.featureEmoji}>🎁</Text>
-                </View>
-                <Text style={[styles.featureLabel, { color: colors.text }]}>Offers</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.featureCard, { backgroundColor: colors.surface }]}>
-                <View style={[styles.featureIcon, { backgroundColor: '#A78BFA20' }]}>
-                  <Text style={styles.featureEmoji}>⭐</Text>
-                </View>
-                <Text style={[styles.featureLabel, { color: colors.text }]}>Reviews</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.featureCard, { backgroundColor: colors.surface }]}>
-                <View style={[styles.featureIcon, { backgroundColor: '#F47CB620' }]}>
-                  <Text style={styles.featureEmoji}>❤️</Text>
-                </View>
-                <Text style={[styles.featureLabel, { color: colors.text }]}>Favorites</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.featureCard, { backgroundColor: colors.surface }]}>
-                <View style={[styles.featureIcon, { backgroundColor: '#10B98120' }]}>
-                  <Text style={styles.featureEmoji}>🎯</Text>
-                </View>
-                <Text style={[styles.featureLabel, { color: colors.text }]}>Recommendations</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </ScrollView>
+        <StudentHomeTab
+          colors={colors}
+          isDark={isDark}
+          walletBalance={walletBalance}
+          orders={orders}
+          closingCountdown={closingCountdown}
+          canteenStatus={canteenStatus}
+          openingTime={openingTime}
+          closingTime={closingTime}
+          menuItems={menuItems}
+          wishlistItems={wishlistItems}
+          onViewAllMenu={() => {
+            setShowPopularInMenu(true);
+            setActiveTab('menu');
+          }}
+          onOpenOffers={() => setActiveTab('wallet')}
+          onOpenFeedback={() => setActiveTab('feedback')}
+          onOpenWishlist={() => setActiveTab('wishlist')}
+          onOpenRecommendations={() => setActiveTab('menu')}
+          onOpenProfile={() => setActiveTab('profile')}
+          onOpenReservations={() => setActiveTab('reservations')}
+          onWishlistToggle={toggleWishlist}
+          addToCart={addToCart}
+          openDrawer={() => setDrawerVisible(true)}
+          onToggleDarkMode={toggleTheme}
+          userName={userName}
+          userRole={userRole}
+          notificationModalVisible={notificationModalVisible}
+          setNotificationModalVisible={setNotificationModalVisible}
+          userAvatar={undefined}
+        />
+      )}
+      {activeTab === 'menu' && (
+        <MenuTab
+          colors={colors}
+          menuItems={menuItems}
+          selectedCategory={selectedCategory}
+          setSelectedCategory={setSelectedCategory}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          filteredMenuItems={filteredMenuItems}
+          cart={cart}
+          removeFromCart={removeFromCart}
+          getTotalPrice={getTotalPrice}
+          placeOrder={placeOrder}
+          addToCart={addToCart}
+          loadingMenu={loadingMenu}
+          openDrawer={() => setDrawerVisible(true)}
+          onWishlistToggle={toggleWishlist}
+          wishlistItems={wishlistItems}
+          updateCartQuantity={updateCartQuantity}
+          onOpenCart={() => setActiveTab('cart')}
+          showPopular={showPopularInMenu}
+          onClosePopular={() => {
+            try {
+              console.log('🔙 onClosePopular callback triggered in UserDashboard');
+              console.log('Current state - showPopularInMenu:', showPopularInMenu, ', activeTab:', activeTab);
+              setShowPopularInMenu(false);
+              setActiveTab('home');
+              console.log('✅ State updated - showPopularInMenu: false, activeTab: home');
+            } catch (err) {
+              console.error('❌ Error in onClosePopular:', err);
+            }
+          }}
+        />
+      )}
+      {activeTab === 'cart' && (
+        <CartTab
+          colors={colors}
+          cart={cart}
+          removeFromCart={removeFromCart}
+          updateCartQuantity={updateCartQuantity}
+          getTotalPrice={getTotalPrice}
+          placeOrder={placeOrder}
+          goToMenu={() => setActiveTab('menu')}
+          closingTime={closingTime}
+          openDrawer={() => setDrawerVisible(true)}
+        />
+      )}
+      {activeTab === 'orders' && (
+        <OrdersTab 
+          colors={colors} 
+          orders={orders} 
+          openDrawer={() => setDrawerVisible(true)}
+          onReorder={(items: Array<{ id: string; name: string; price: number; quantity: number; category?: string; food_type?: string; image?: string; available?: boolean; }>) => {
+            // Map OrderItem to CartItem (add missing fields with defaults)
+            items.forEach((item: { id: string; name: string; price: number; quantity: number; category?: string; food_type?: string; image?: string; available?: boolean; }) => {
+              const fullItem = menuItems.find(m => m.id === item.id) || {
+                ...item,
+                category: item.category || '',
+                food_type: item.food_type || 'veg',
+                image: item.image || '',
+                available: true,
+              };
+              for (let i = 0; i < item.quantity; i++) {
+                addToCart(fullItem as MenuItem);
+              }
+            });
+            setActiveTab('menu');
+          }}
+          onCancelOrder={cancelOrder}
+        />
+      )}
+      {activeTab === 'wallet' && (
+        <WalletTab colors={colors} openDrawer={() => setDrawerVisible(true)} />
+      )}
+      {activeTab === 'feedback' && (
+        <FeedbackTab colors={colors} />
+      )}
+      {activeTab === 'wishlist' && (
+        <WishlistTab
+          colors={colors}
+          addToCart={addToCart}
+          onRemove={(id: string) => setWishlistItems(wishlistItems.filter(i => i !== id))}
+          openDrawer={() => setDrawerVisible(true)}
+          goToMenuTab={() => {
+            setShowPopularInMenu(true);
+            setActiveTab('menu');
+          }}
+        />
+      )}
+      {activeTab === 'profile' && (
+        <ProfileTab colors={colors} openDrawer={() => setDrawerVisible(true)} logout={logout} walletBalance={walletBalance} orders={orders} />
+      )}
+      {activeTab === 'reservations' && (
+        <ReservationsTab />
       )}
 
-      {activeTab === 'menu' && (
-        <ScrollView style={styles.content}>
-          <View style={[styles.header, { backgroundColor: colors.surface }]}>
-            <View style={styles.headerTop}>
+      {/* Optional Seat Reservation Modal */}
+      <Modal
+        visible={showReservationModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setShowReservationModal(false);
+          setSelectedResDate(null);
+          setSelectedResTimeSlot('');
+          setSelectedResArea('');
+          setSelectedResSeat('');
+          setResNumberOfSeats(1);
+          setResPurpose('');
+          setResSpecialRequests('');
+        }}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+          <View style={{ backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '90%' }}>
+            {/* Header */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' }}>
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#333' }}>🪑 Reserve a Seat</Text>
               <TouchableOpacity
-                style={[styles.menuButton, { backgroundColor: colors.primary }]}
                 onPress={() => {
-                  if (selectedCategory) {
-                    setSelectedCategory(null);
-                  } else {
-                    setDrawerVisible(true);
-                  }
+                  setShowReservationModal(false);
+                  setSelectedResDate(null);
+                  setSelectedResTimeSlot('');
+                  setSelectedResArea('');
+                  setSelectedResSeat('');
+                  setResNumberOfSeats(1);
+                  setResPurpose('');
+                  setResSpecialRequests('');
                 }}
               >
-                <Text style={styles.menuIcon}>{selectedCategory ? '←' : '☰'}</Text>
+                <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#999' }}>✕</Text>
               </TouchableOpacity>
             </View>
-            <View style={styles.headerContent}>
-              <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>
-                {selectedCategory ? 'Browse' : 'Explore'}
-              </Text>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>
-                {selectedCategory || 'Our Menu'}
-              </Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                {selectedCategory 
-                  ? `${menuItems.filter(i => i.category === selectedCategory && i.available).length} items available`
-                  : `${menuItems.filter(i => i.available).length} items available`}
-              </Text>
-            </View>
-          </View>
 
-          {/* Search Bar */}
-          <View style={[styles.searchBar, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
-            <TextInput
-              style={[styles.searchInput, { color: colors.text }]}
-              placeholder="Search for dishes or categories"
-              placeholderTextColor={colors.textSecondary}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoCorrect={false}
-              autoCapitalize="none"
-              clearButtonMode="while-editing"
-            />
-            {searchQuery ? (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Text style={{ color: colors.textSecondary, fontSize: 16 }}>✕</Text>
-              </TouchableOpacity>
-            ) : (
-              <Text style={{ color: colors.textSecondary, fontSize: 16 }}>🔍</Text>
-            )}
-          </View>
-
-          {/* Cart Preview */}
-          {cart.length > 0 && (
-            <View style={[styles.cartPreview, { backgroundColor: colors.surface }]}>
-              <Text style={[styles.cartTitle, { color: colors.text }]}>
-                Cart ({cart.length} items)
-              </Text>
-              <FlatList
-                data={cart}
-                scrollEnabled={false}
-                renderItem={({ item }) => (
-                  <View style={[styles.cartItem, { borderBottomColor: colors.border }]}>
-                    <View>
-                      <Text style={[styles.cartItemName, { color: colors.text }]}>
-                        {item.name}
-                      </Text>
-                      <Text style={[styles.cartItemPrice, { color: colors.textSecondary }]}>
-                        ₹{item.price} × {item.quantity}
-                      </Text>
-                    </View>
-                    <TouchableOpacity onPress={() => removeFromCart(item.id)}>
-                      <Text style={[styles.removeBtn, { color: colors.danger }]}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-                keyExtractor={(item) => item.id}
-              />
-              <View style={[styles.cartFooter, { borderTopColor: colors.border }]}>
-                <Text style={[styles.totalPrice, { color: colors.text }]}>
-                  Total: ₹{getTotalPrice()}
-                </Text>
-                <TouchableOpacity
-                  style={[styles.orderBtn, { backgroundColor: colors.primary }]}
-                  onPress={placeOrder}
-                >
-                  <Text style={styles.orderBtnText}>Place Order</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {/* Loading State */}
-          {loadingMenu && (
-            <View style={{ padding: 40, alignItems: 'center' }}>
-              <Text style={{ fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 10 }}>
-                Loading Menu...
-              </Text>
-              <ActivityIndicator size="large" color={colors.primary} />
-            </View>
-          )}
-
-          {/* Empty Menu State */}
-          {!loadingMenu && menuItems.length === 0 && (
-            <View style={[styles.emptyState, { backgroundColor: colors.surface + '50' }]}>
-              <Text style={styles.emptyEmoji}>🍽️</Text>
-              <Text style={[styles.emptyTitle, { color: colors.text }]}>No Menu Items</Text>
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                Menu items will appear here once admin adds them
-              </Text>
-            </View>
-          )}
-
-          {/* Category View */}
-          {!loadingMenu && menuItems.length > 0 && !selectedCategory && !isSearching && (
-            <>
-              <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
-                <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: 12 }]}>
-                  Browse by Category
-                </Text>
-              </View>
-              {Array.from(new Set(menuItems.map(item => item.category))).map((category) => {
-                const categoryItems = menuItems.filter(i => i.category === category);
-                const availableCount = categoryItems.filter(i => i.available).length;
-                
-                const getCategoryIcon = (cat: string) => {
-                  const icons: { [key: string]: string } = {
-                    'Rice': '🍚',
-                    'South Indian': '🥘',
-                    'Breakfast': '🍳',
-                    'Lunch': '🍱',
-                    'Snacks': '🥟',
-                    'Beverages': '☕',
-                    'Starters': '🍢',
-                  };
-                  return icons[cat] || '🍴';
-                };
-
-                const getCategoryColor = (cat: string) => {
-                  const colors: { [key: string]: string } = {
-                    'Rice': '#FF6B6B',
-                    'South Indian': '#4ECDC4',
-                    'Breakfast': '#FFD93D',
-                    'Lunch': '#95E1D3',
-                    'Snacks': '#F38181',
-                    'Beverages': '#AA96DA',
-                    'Starters': '#FCBAD3',
-                  };
-                  return colors[cat] || '#8B5CF6';
-                };
-
-                return (
-                  <TouchableOpacity
-                    key={category}
-                    style={[styles.categoryCard, { backgroundColor: colors.surface, marginHorizontal: 16, marginBottom: 12 }]}
-                    onPress={() => setSelectedCategory(category)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={[styles.categoryIconWrapper, { backgroundColor: getCategoryColor(category) + '20' }]}>
-                      <Text style={styles.categoryIconLarge}>{getCategoryIcon(category)}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.categoryTitle, { color: colors.text }]}>{category}</Text>
-                      <Text style={[styles.categorySubtitle, { color: colors.textSecondary }]}>
-                        {availableCount} available • {categoryItems.length} total
-                      </Text>
-                    </View>
-                    <Text style={{ fontSize: 24, color: colors.textSecondary }}>→</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </>
-          )}
-
-          {/* Menu Items Grid - Filtered by Selected Category */}
-          {!loadingMenu && menuItems.length > 0 && (selectedCategory || isSearching) && (
-            filteredMenuItems.length === 0 ? (
-              <View style={[styles.emptyState, { backgroundColor: colors.surface + '50' }]}>
-                <Text style={styles.emptyEmoji}>🔍</Text>
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>No matches found</Text>
-                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                  Try a different name or category
-                </Text>
-              </View>
-            ) : (
-              <FlatList
-                data={filteredMenuItems}
-                scrollEnabled={false}
-                numColumns={2}
-                columnWrapperStyle={styles.itemRow}
-                renderItem={({ item }) => (
-                  <View
-                    style={[
-                      styles.menuCard,
-                      {
-                        backgroundColor: colors.surface,
-                        opacity: item.available ? 1 : 0.5,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.menuItemImage,
-                        { backgroundColor: colors.primary + '15' },
-                      ]}
+            <ScrollView style={{ padding: 20 }}>
+              {/* Date Selection */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 }}>📅 Select Date</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
+                {[0, 1, 2, 3, 4, 5, 6].map((day) => {
+                  const date = new Date();
+                  date.setDate(date.getDate() + day);
+                  const isSelected = selectedResDate && selectedResDate.toDateString() === date.toDateString();
+                  return (
+                    <TouchableOpacity
+                      key={day}
+                      onPress={() => setSelectedResDate(date)}
+                      style={{
+                        backgroundColor: isSelected ? colors.primary : '#f5f5f5',
+                        padding: 12,
+                        borderRadius: 10,
+                        marginRight: 10,
+                        minWidth: 70,
+                        alignItems: 'center',
+                      }}
                     >
-                      {item.image ? (
-                        <Image
-                          source={{ uri: item.image }}
-                          style={{ width: '100%', height: 100 }}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Text style={styles.foodEmoji}>
-                          {item.category === 'Rice'
-                            ? '🍚'
-                            : item.category === 'Starters'
-                            ? '🥘'
-                            : '🍽️'}
-                        </Text>
-                      )}
-                      {!item.available && (
-                        <View style={styles.unavailableBadge}>
-                          <Text style={styles.unavailableText}>Out</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={[styles.itemName, { color: colors.text }]}>
-                      {item.name}
-                    </Text>
-                    <Text style={[styles.itemCategory, { color: colors.textSecondary }]}>
-                      {item.category}
-                    </Text>
-                    <View style={styles.itemFooter}>
-                      <Text style={[styles.price, { color: colors.primary }]}>
-                        ₹{item.price}
+                      <Text style={{ fontSize: 12, color: isSelected ? 'white' : '#666', fontWeight: '500' }}>
+                        {day === 0 ? 'Today' : day === 1 ? 'Tomorrow' : `+${day}d`}
                       </Text>
-                      <TouchableOpacity
-                        style={[
-                          styles.addBtn,
-                          {
-                            backgroundColor: colors.primary,
-                            opacity: item.available ? 1 : 0.5,
-                          },
-                        ]}
-                        onPress={() => item.available && addToCart(item)}
-                        disabled={!item.available}
-                      >
-                        <Text style={styles.addBtnText}>+</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-                keyExtractor={(item) => item.id}
-              />
-            )
-          )}
-        </ScrollView>
-      )}
+                      <Text style={{ fontSize: 11, color: isSelected ? 'white' : '#999', marginTop: 4 }}>
+                        {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
 
-      {activeTab === 'orders' && (
-        <ScrollView style={styles.content}>
-          <View style={[styles.header, { backgroundColor: colors.surface }]}>
-            <View style={styles.headerTop}>
-              <TouchableOpacity
-                style={[styles.menuButton, { backgroundColor: colors.primary }]}
-                onPress={() => setDrawerVisible(true)}
-              >
-                <Text style={styles.menuIcon}>☰</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.headerContent}>
-              <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>
-                Track
-              </Text>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>Your Orders</Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                {orders.length} order{orders.length !== 1 ? 's' : ''}
-              </Text>
-            </View>
-          </View>
-
-          {orders.length === 0 ? (
-            <View style={[styles.emptyState, { backgroundColor: colors.surface + '50' }]}>
-              <Text style={styles.emptyEmoji}>📋</Text>
-              <Text style={[styles.emptyTitle, { color: colors.text }]}>No Orders Yet</Text>
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                Start by ordering from our menu
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.section}>
-              <FlatList
-                data={orders}
-                scrollEnabled={false}
-                renderItem={({ item }) => (
-                  <View
-                    style={[styles.orderCard, { backgroundColor: colors.surface }]}
+              {/* Time Slot Selection */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 }}>⏰ Select Time</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 20 }}>
+                {['11:00 AM', '11:30 AM', '12:00 PM', '12:30 PM', '1:00 PM', '1:30 PM', '2:00 PM', '2:30 PM'].map((slot) => (
+                  <TouchableOpacity
+                    key={slot}
+                    onPress={() => setSelectedResTimeSlot(slot)}
+                    style={{
+                      backgroundColor: selectedResTimeSlot === slot ? colors.primary : '#f5f5f5',
+                      padding: 10,
+                      borderRadius: 8,
+                      marginRight: 8,
+                      marginBottom: 8,
+                      width: '22%',
+                      alignItems: 'center',
+                    }}
                   >
-                    <View style={styles.orderCardTop}>
-                      <View style={styles.orderInfo}>
-                        <Text style={[styles.orderId, { color: colors.text }]}>
-                          Order #{item.id}
-                        </Text>
-                        <Text style={[styles.orderTime, { color: colors.textSecondary }]}>
-                          {item.timestamp}
-                        </Text>
-                      </View>
-                      <View style={styles.orderCardRight}>
-                        <View
-                          style={[
-                            styles.orderStatusBadge,
-                            {
-                              backgroundColor:
-                                item.status === 'Completed'
-                                  ? colors.success + '20'
-                                  : item.status === 'Ready'
-                                  ? colors.primary + '20'
-                                  : colors.warning + '20',
-                            },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.orderStatusText,
-                              {
-                                color:
-                                  item.status === 'Completed'
-                                    ? colors.success
-                                    : item.status === 'Ready'
-                                    ? colors.primary
-                                    : colors.warning,
-                              },
-                            ]}
-                          >
-                            {item.status}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                    <View style={styles.orderCardBottom}>
-                      <Text style={[styles.itemsCount, { color: colors.textSecondary }]}>
-                        {item.items.length} item{item.items.length !== 1 ? 's' : ''}
-                      </Text>
-                      <Text style={[styles.orderPrice, { color: colors.primary }]}>
-                        ₹{item.totalPrice}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-                keyExtractor={(item) => item.id}
-              />
-            </View>
-          )}
-        </ScrollView>
-      )}
-
-      {activeTab === 'wallet' && (
-        <ScrollView style={styles.content}>
-          <View style={[styles.header, { backgroundColor: colors.surface }]}>
-            <View style={styles.headerTop}>
-              <TouchableOpacity
-                style={[styles.menuButton, { backgroundColor: colors.primary }]}
-                onPress={() => setDrawerVisible(true)}
-              >
-                <Text style={styles.menuIcon}>☰</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.headerContent}>
-              <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>
-                Manage
-              </Text>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>Your Wallet</Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                Balance: ₹{walletBalance}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <View style={[styles.statCard, { backgroundColor: colors.primary + '15' }]}>
-              <View style={[styles.statIconCircle, { backgroundColor: colors.primary + '30' }]}>
-                <Text style={styles.statEmoji}>💳</Text>
+                    <Text style={{ fontSize: 12, color: selectedResTimeSlot === slot ? 'white' : '#333', fontWeight: '500' }}>
+                      {slot}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
-              <View style={styles.statInfo}>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
-                  Available Balance
-                </Text>
-                <Text style={[styles.statValue, { color: colors.primary }]}>
-                  ₹{walletBalance}
-                </Text>
-              </View>
-            </View>
-          </View>
 
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Add Money
-              </Text>
-            </View>
-            <View style={{ gap: 12 }}>
-              {[100, 500, 1000, 2000].map((amount) => (
-                <TouchableOpacity
-                  key={amount}
-                  style={[styles.quickOrderCard, { backgroundColor: colors.surface, width: '100%', marginRight: 0, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16 }]}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <View style={[styles.quickCardIcon, { marginRight: 14, marginBottom: 0 }]}>
-                      <Text style={styles.quickCardEmoji}>💵</Text>
-                    </View>
+              {/* Seating Area Selection */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 }}>🏢 Select Area</Text>
+              <View style={{ marginBottom: 20 }}>
+                {[
+                  { id: 'window', label: '🪟 Window', description: 'Scenic view' },
+                  { id: 'quiet', label: '🤫 Quiet Zone', description: 'Peaceful' },
+                  { id: 'social', label: '👥 Social Area', description: 'Busy & fun' },
+                  { id: 'corner', label: '📍 Corner', description: 'Private' }
+                ].map((area) => (
+                  <TouchableOpacity
+                    key={area.id}
+                    onPress={() => setSelectedResArea(area.id)}
+                    style={{
+                      backgroundColor: selectedResArea === area.id ? colors.primary + '20' : '#f9f9f9',
+                      borderWidth: selectedResArea === area.id ? 2 : 1,
+                      borderColor: selectedResArea === area.id ? colors.primary : '#e0e0e0',
+                      padding: 12,
+                      borderRadius: 10,
+                      marginBottom: 10,
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}
+                  >
                     <View>
-                      <Text style={[styles.quickCardName, { textAlign: 'left' }]}>Add ₹{amount}</Text>
+                      <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 2 }}>{area.label}</Text>
+                      <Text style={{ fontSize: 12, color: '#999' }}>{area.description}</Text>
                     </View>
+                    {selectedResArea === area.id && (
+                      <Text style={{ fontSize: 16, color: colors.primary }}>✓</Text>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Seat Selection */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 }}>🪑 Select Seat</Text>
+              <View style={{ marginBottom: 20 }}>
+                {['A', 'B', 'C', 'D'].map((row) => (
+                  <View key={row} style={{ flexDirection: 'row', marginBottom: 10 }}>
+                    {[1, 2, 3].map((col) => {
+                      const seatId = `${row}${col}`;
+                      return (
+                        <TouchableOpacity
+                          key={seatId}
+                          onPress={() => setSelectedResSeat(seatId)}
+                          style={{
+                            flex: 1,
+                            backgroundColor: selectedResSeat === seatId ? colors.primary : '#f5f5f5',
+                            padding: 15,
+                            borderRadius: 8,
+                            marginRight: col < 3 ? 8 : 0,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderWidth: 1,
+                            borderColor: selectedResSeat === seatId ? colors.primary : '#ddd'
+                          }}
+                        >
+                          <Text style={{ fontSize: 14, fontWeight: '600', color: selectedResSeat === seatId ? 'white' : '#333' }}>
+                            {seatId}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
-                  <Text style={[styles.quickCardPrice, { color: colors.primary }]}>→</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Recent Transactions
-              </Text>
-              <Text style={[styles.viewAll, { color: colors.primary }]}>View All</Text>
-            </View>
-            {[
-              { type: 'debit', desc: 'Order #1001', amount: 150 },
-              { type: 'credit', desc: 'Added money', amount: 500 },
-              { type: 'debit', desc: 'Order #1002', amount: 260 },
-            ].map((txn, idx) => (
-              <View
-                key={idx}
-                style={[styles.transactionItem, { backgroundColor: colors.surface }]}
-              >
-                <View>
-                  <Text style={[styles.txnDesc, { color: colors.text }]}>
-                    {txn.type === 'debit' ? '📤' : '📥'} {txn.desc}
-                  </Text>
-                </View>
-                <Text
-                  style={[
-                    styles.txnAmount,
-                    { color: txn.type === 'debit' ? colors.danger : colors.success },
-                  ]}
-                >
-                  {txn.type === 'debit' ? '-' : '+'}₹{txn.amount}
-                </Text>
+                ))}
               </View>
-            ))}
-          </View>
-        </ScrollView>
-      )}
 
-      {activeTab === 'profile' && (
-        <ScrollView style={styles.content}>
-          <View style={[styles.header, { backgroundColor: colors.surface }]}>
-            <View style={styles.headerTop}>
+              {/* Number of Seats */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 }}>👥 Number of Seats</Text>
+              <View style={{ flexDirection: 'row', marginBottom: 20 }}>
+                {[1, 2, 3, 4, 5, 6].map((num) => (
+                  <TouchableOpacity
+                    key={num}
+                    onPress={() => setResNumberOfSeats(num)}
+                    style={{
+                      flex: 1,
+                      backgroundColor: resNumberOfSeats === num ? colors.primary : '#f5f5f5',
+                      padding: 10,
+                      borderRadius: 8,
+                      marginRight: num < 6 ? 8 : 0,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '600', color: resNumberOfSeats === num ? 'white' : '#333' }}>
+                      {num}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Purpose */}
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 8 }}>💭 Purpose</Text>
+              <TextInput
+                placeholder="e.g., Study, Meeting, Casual"
+                value={resPurpose}
+                onChangeText={setResPurpose}
+                style={{
+                  borderWidth: 1,
+                  borderColor: '#ddd',
+                  borderRadius: 8,
+                  padding: 10,
+                  marginBottom: 20,
+                  fontSize: 14,
+                  color: '#333'
+                }}
+              />
+
+              {/* Submit Button */}
               <TouchableOpacity
-                style={[styles.menuButton, { backgroundColor: colors.primary }]}
-                onPress={() => setDrawerVisible(true)}
+                onPress={submitReservationThenPayment}
+                style={{
+                  backgroundColor: colors.primary,
+                  paddingVertical: 14,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  marginBottom: 20
+                }}
               >
-                <Text style={styles.menuIcon}>☰</Text>
+                <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold' }}>
+                  ✓ Book Seat & Continue to Payment
+                </Text>
               </TouchableOpacity>
-            </View>
-            <View style={styles.headerContent}>
-              <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>
-                Account
-              </Text>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>Your Profile</Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                Manage your details
-              </Text>
-            </View>
+            </ScrollView>
           </View>
+        </View>
+      </Modal>
 
-          <View style={styles.section}>
-            <View style={[styles.statCard, { backgroundColor: colors.primary + '15', justifyContent: 'center', paddingHorizontal: 20 }]}>
-              <View style={[styles.statIconCircle, { backgroundColor: colors.primary + '30', width: 70, height: 70, borderRadius: 35 }]}>
-                <Text style={{ fontSize: 36 }}>👤</Text>
-              </View>
-              <View style={[styles.statInfo, { marginLeft: 0, marginTop: 16 }]}>
-                <Text style={[styles.statValue, { color: colors.primary, marginBottom: 2 }]}>
-                  Chandler
-                </Text>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
-                  chandler@university.edu
-                </Text>
-              </View>
-            </View>
-          </View>
+      <BottomNavigation tabs={tabs} activeTab={activeTab} onTabPress={setActiveTab} />
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 12 }]}>
-              Account Information
-            </Text>
-            <TouchableOpacity
-              style={[styles.profileItem, { backgroundColor: colors.surface }]}
-            >
-              <Text style={styles.profileItemIcon}>📞</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.profileItemLabel, { color: colors.textSecondary }]}>
-                  Phone Number
-                </Text>
-                <Text style={[styles.profileItemValue, { color: colors.text }]}>
-                  +91 98765 43210
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18 }}>→</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.profileItem, { backgroundColor: colors.surface }]}
-            >
-              <Text style={styles.profileItemIcon}>👤</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.profileItemLabel, { color: colors.textSecondary }]}>
-                  Role / Status
-                </Text>
-                <Text style={[styles.profileItemValue, { color: colors.text }]}>
-                  Student
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18 }}>→</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.profileItem, { backgroundColor: colors.surface }]}
-            >
-              <Text style={styles.profileItemIcon}>📍</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.profileItemLabel, { color: colors.textSecondary }]}>
-                  Saved Addresses
-                </Text>
-                <Text style={[styles.profileItemValue, { color: colors.text }]}>
-                  1 address saved
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18 }}>→</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 12 }]}>
-              Settings
-            </Text>
-            <TouchableOpacity
-              style={[styles.profileItem, { backgroundColor: colors.surface }]}
-            >
-              <Text style={styles.profileItemIcon}>🔔</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.profileItemLabel, { color: colors.textSecondary }]}>
-                  Notifications
-                </Text>
-                <Text style={[styles.profileItemValue, { color: colors.text }]}>
-                  Enabled
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18 }}>→</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.profileItem, { backgroundColor: colors.surface }]}
-            >
-              <Text style={styles.profileItemIcon}>🔒</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.profileItemLabel, { color: colors.textSecondary }]}>
-                  Privacy & Security
-                </Text>
-                <Text style={[styles.profileItemValue, { color: colors.text }]}>
-                  Manage settings
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18 }}>→</Text>
-            </TouchableOpacity>
-          </View>
-
+      {/* Floating Back Button Header for Popular View - Rendered Last to Stay on Top */}
+      {showPopularInMenu && (
+        <View style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 999,
+          paddingHorizontal: 16,
+          paddingVertical: 10,
+          paddingTop: 6,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          backgroundColor: colors.background,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.surface + '40',
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.15,
+          shadowRadius: 4,
+        }}>
           <TouchableOpacity
-            style={[styles.logoutBtn2, { backgroundColor: colors.danger, marginBottom: 20 }]}
-            onPress={logout}
+            onPress={() => {
+              console.log('🔙 Back button pressed from floating header');
+              setShowPopularInMenu(false);
+              setActiveTab('home');
+            }}
+            activeOpacity={0.6}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              justifyContent: 'center',
+              alignItems: 'center',
+              backgroundColor: colors.primary + '20',
+            }}
           >
-            <Text style={styles.logoutBtnText}>🚪 Logout</Text>
+            <Text style={{ color: colors.primary, fontWeight: '900', fontSize: 26 }}>←</Text>
           </TouchableOpacity>
-        </ScrollView>
+          
+          <View style={{ flex: 1 }} />
+          
+          <TouchableOpacity
+            onPress={() => {
+              console.log('🔙 Close button pressed from floating header');
+              setShowPopularInMenu(false);
+              setActiveTab('home');
+            }}
+            activeOpacity={0.6}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              justifyContent: 'center',
+              alignItems: 'center',
+              backgroundColor: colors.primary + '20',
+            }}
+          >
+            <Text style={{ color: colors.primary, fontWeight: '900', fontSize: 26 }}>×</Text>
+          </TouchableOpacity>
+        </View>
       )}
-
-      {/* Bottom Navigation */}
-      <BottomNavigation
-        tabs={tabs}
-        activeTab={activeTab}
-        onTabPress={setActiveTab}
-      />
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  content: {
-    flex: 1,
-    paddingBottom: 70,
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 24,
-    elevation: 4,
-    shadowColor: '#8B5CF6',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-  },
-  headerTop: {
-    marginBottom: 16,
-  },
-  menuButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#8B5CF6',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-  },
-  menuIcon: {
-    fontSize: 22,
-    color: '#fff',
-    fontWeight: '700',
-  },
-  headerContent: {
-    marginTop: 8,
-  },
-  welcomeText: {
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 4,
-    letterSpacing: 0.5,
-  },
-  headerTitle: {
-    fontSize: 32,
-    fontWeight: '900',
-    letterSpacing: -1,
-    marginBottom: 6,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    opacity: 0.85,
-  },
-  spacer: {
-    flex: 1,
-  },
-  statusAlert: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  statusAlertIcon: {
-    marginRight: 14,
-    fontSize: 24,
-  },
-  alertEmoji: {
-    fontSize: 28,
-  },
-  statusAlertContent: {
-    flex: 1,
-  },
-  statusAlertTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  statusAlertTime: {
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  closingTimeCard: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderLeftWidth: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  closingTimeLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  closingTimeValue: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  statsContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
-  },
-  statCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 16,
-    borderRadius: 18,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  statIconCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 14,
-  },
-  statEmoji: {
-    fontSize: 28,
-  },
-  statInfo: {
-    flex: 1,
-  },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '900',
-  },
-  section: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  viewAll: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  orderCount: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  quickOrderCard: {
-    width: 140,
-    marginRight: 12,
-    paddingVertical: 18,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  quickCardIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  quickCardEmoji: {
-    fontSize: 32,
-  },
-  quickCardName: {
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 8,
-    letterSpacing: -0.2,
-  },
-  quickCardPrice: {
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  orderCard: {
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  orderCardTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  orderInfo: {
-    flex: 1,
-  },
-  orderId: {
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 4,
-    letterSpacing: -0.3,
-  },
-  orderTime: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  orderCardBottom: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    paddingTop: 10,
-  },
-  itemsCount: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  orderStatusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  orderStatusText: {
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  orderPrice: {
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  emptyState: {
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-    marginVertical: 12,
-  },
-  emptyEmoji: {
-    fontSize: 48,
-    marginBottom: 12,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  emptyText: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  featuresGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  featureCard: {
-    width: '48%',
-    paddingVertical: 18,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  featureIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  featureEmoji: {
-    fontSize: 28,
-  },
-  featureLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-  header2: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
-  },
-  headerTitle2: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '700',
-    marginLeft: 12,
-  },
-  cartBadge: {
-    backgroundColor: '#EF4444',
-    color: '#fff',
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  cartPreview: {
-    margin: 16,
-    borderRadius: 12,
-    padding: 12,
-    elevation: 2,
-  },
-  cartTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  cartItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-  },
-  cartItemName: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  cartItemPrice: {
-    fontSize: 11,
-    marginTop: 2,
-  },
-  removeBtn: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  cartFooter: {
-    paddingTop: 12,
-    borderTopWidth: 1,
-    marginTop: 8,
-  },
-  totalPrice: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  orderBtn: {
-    borderRadius: 8,
-    padding: 12,
-    alignItems: 'center',
-  },
-  orderBtnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  itemRow: {
-    gap: 8,
-    paddingHorizontal: 16,
-    marginBottom: 8,
-  },
-  menuCard: {
-    flex: 1,
-    borderRadius: 12,
-    overflow: 'hidden',
-    elevation: 1,
-  },
-  menuItemImage: {
-    height: 100,
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  foodEmoji: {
-    fontSize: 48,
-  },
-  unavailableBadge: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    backgroundColor: '#EF4444',
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  unavailableText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  itemName: {
-    fontSize: 13,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingTop: 8,
-  },
-  itemCategory: {
-    fontSize: 11,
-    paddingHorizontal: 8,
-  },
-  itemFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 8,
-  },
-  price: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  addBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  addBtnText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  balanceCard: {
-    margin: 16,
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    elevation: 3,
-  },
-  balanceLabel: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 14,
-    marginBottom: 8,
-  },
-  balanceAmount: {
-    color: '#fff',
-    fontSize: 36,
-    fontWeight: '700',
-    marginBottom: 16,
-  },
-  addMoneyBtn: {
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 24,
-  },
-  addMoneyText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  transactionItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-  },
-  txnDesc: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  txnAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  profileCard: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    borderRadius: 12,
-    padding: 20,
-    alignItems: 'center',
-    elevation: 1,
-  },
-  profileAvatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  profileAvatarText: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: '#4F46E5',
-  },
-  profileName: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  profileEmail: {
-    fontSize: 12,
-    marginTop: 4,
-  },
-  profileItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-    elevation: 1,
-  },
-  profileItemIcon: {
-    fontSize: 20,
-    marginRight: 12,
-  },
-  profileItemLabel: {
-    fontSize: 11,
-  },
-  profileItemValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  logoutBtn2: {
-    marginHorizontal: 16,
-    marginVertical: 12,
-    borderRadius: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  logoutBtnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  orderCardRight: {
-    alignItems: 'flex-end',
-  },
-  orderItem: {
-    fontSize: 11,
-    marginVertical: 2,
-  },
-  categoryCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  categoryIconWrapper: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 14,
-  },
-  categoryIconLarge: {
-    fontSize: 28,
-  },
-  categoryTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  categorySubtitle: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 10,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-});

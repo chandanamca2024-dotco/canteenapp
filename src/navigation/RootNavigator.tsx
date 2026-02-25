@@ -7,20 +7,26 @@ import Login from '../screens/auth/LoginScreen';
 import Register from '../screens/auth/RegisterScreen';
 import Otp from '../screens/auth/OtpScreen';
 import AdminLogin from '../screens/auth/AdminLoginScreen';
+import StaffLogin from '../screens/auth/StaffLoginScreen';
+import SelectRole from '../screens/auth/SelectRoleScreen';
 import UserDashboard from '../screens/user/UserDashboard';
 import AdminDashboard from '../screens/admin/AdminDashboard';
+import StaffDashboard from '../screens/canteen staff/StaffDashboard';
 import { supabase } from '../lib/supabase';
 import { ADMIN_EMAIL } from '../config/admin';
 import { View, ActivityIndicator } from 'react-native';
 
 export type RootStackParamList = {
   Splash: undefined;
-  Login: undefined;
+  Login: { email?: string } | undefined;
   Register: undefined;
   Otp: { email: string; mode: 'login' | 'register' };
+  SelectRole: { userId: string };
   AdminLogin: undefined;
   UserDashboard: undefined;
   AdminDashboard: undefined;
+  StaffDashboard: undefined;
+  StaffLogin: undefined;
 };
 
 export type RootScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<
@@ -39,9 +45,12 @@ export default function RootNavigator() {
         <Stack.Screen name="Login" component={Login} />
         <Stack.Screen name="Register" component={Register} />
         <Stack.Screen name="Otp" component={Otp} />
+        <Stack.Screen name="SelectRole" component={SelectRole} />
         <Stack.Screen name="AdminLogin" component={AdminLogin} />
+        <Stack.Screen name="StaffLogin" component={StaffLogin} />
         <Stack.Screen name="UserDashboard" component={UserDashboard} />
         <Stack.Screen name="AdminDashboard" component={AdminGuard(AdminDashboard)} />
+        <Stack.Screen name="StaffDashboard" component={StaffDashboard} />
       </Stack.Navigator>
     </NavigationContainer>
   );

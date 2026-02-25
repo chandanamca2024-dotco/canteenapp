@@ -7,14 +7,14 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  TouchableOpacity,
 } from 'react-native';
 import AppInput from '../../components/AppInput';
 import AppButton from '../../components/AppButton';
 import { supabase } from '../../lib/supabase';
-import { isUserAdmin } from '../../lib/adminDataHelper';
 
 export default function AdminLogin({ navigation }: any) {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState('admin@dinedesk.com'); // Pre-filled for easier testing
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -24,35 +24,64 @@ export default function AdminLogin({ navigation }: any) {
     setError('');
     
     try {
+      console.log('🔐 Attempting admin login for:', email.trim());
+      
+      // Add timeout to prevent infinite loading (10 seconds)
+      const loginTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Login timed out - please check your internet connection')), 10000)
+      );
+
       // Sign in with email and password
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      const loginPromise = supabase.auth.signInWithPassword({
         email: email.trim().toLowerCase(),
         password,
       });
 
+      const { data, error: signInError } = await Promise.race([loginPromise, loginTimeout]) as any;
+
       if (signInError) {
         let errorMessage = signInError.message || 'Login failed';
-        // Add helpful message for network errors
-        if (errorMessage.includes('network') || errorMessage.includes('request failed')) {
-          errorMessage += '\n\nPlease check your internet connection and try again.';
-        }
+        console.error('❌ Sign in error:', errorMessage);
         setError(errorMessage);
         Alert.alert('Login Error', errorMessage);
         setLoading(false);
         return;
       }
 
-      if (!data.user) {
+      if (!data?.user) {
         setError('No user found');
         Alert.alert('Error', 'No user found');
         setLoading(false);
         return;
       }
 
-      // Check if user is admin
-      const adminStatus = await isUserAdmin();
+      console.log('✅ Sign in successful, checking admin role...');
+
+      // Fast admin check - just verify role from profiles table (with timeout)
+      const profileTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Profile check timed out')), 5000)
+      );
+
+      const profilePromise = supabase
+        .from('profiles')
+        .select('role, email')
+        .eq('id', data.user.id)
+        .maybeSingle();
+
+      let profile: any = null;
+      try {
+        const result = await Promise.race([profilePromise, profileTimeout]) as any;
+        profile = result?.data;
+      } catch (err) {
+        console.warn('⚠️ Profile check timed out, proceeding anyway');
+      }
+
+      // Check if user is admin (by role or email)
+      const isAdmin = profile?.role?.toLowerCase() === 'admin' || 
+                      data.user.email?.toLowerCase() === 'admin@dinedesk.com';
       
-      if (!adminStatus) {
+      if (!isAdmin) {
+        console.error('❌ Not authorized as admin');
         // Sign out non-admin users
         await supabase.auth.signOut();
         setError('Not authorized');
@@ -61,28 +90,29 @@ export default function AdminLogin({ navigation }: any) {
         return;
       }
 
-      // Store admin login record
-      const loginRecord = await supabase.from('admin_logins').insert({
+      console.log('✅ Admin verified, logging in...');
+
+      // Store admin login record (non-blocking, with timeout)
+      supabase.from('admin_logins').insert({
         admin_user: data.user.id,
         email: email.toLowerCase(),
         device: 'mobile',
         app_version: '1.0.0',
         success: true,
+      }).then(() => {
+        console.log('📝 Login record saved');
+      }).catch((err) => {
+        console.warn('⚠️ Failed to save login record:', err);
       });
-      
-      if (loginRecord.error) {
-        // Silent fail - not critical
-        console.log('Login record not saved:', loginRecord.error);
-      }
 
+      setLoading(false);
+      
       // Navigate to admin dashboard
+      console.log('🎯 Navigating to AdminDashboard');
       navigation.replace('AdminDashboard');
     } catch (err: any) {
+      console.error('❌ Login error:', err);
       let message = err?.message || 'An error occurred during login';
-      // Add helpful message for network errors
-      if (message.includes('network') || message.includes('request failed')) {
-        message += '\n\nPlease check your internet connection and try again.';
-      }
       setError(message);
       Alert.alert('Error', message);
       setLoading(false);
@@ -138,6 +168,25 @@ export default function AdminLogin({ navigation }: any) {
             disabled={!email.trim() || !password || loading}
           />
         )}
+
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => navigation.goBack()}
+          disabled={loading}
+        >
+          <Text style={styles.backText}>← Back to main login</Text>
+        </TouchableOpacity>
+
+        <View style={styles.infoBox}>
+          <Text style={styles.infoTitle}>ℹ️ Default Admin Credentials</Text>
+          <Text style={styles.infoText}>
+            Email: admin@dinedesk.com{'\n'}
+            Password: (check Supabase Dashboard)
+          </Text>
+          <Text style={styles.infoSubtext}>
+            Create admin user in Supabase if it doesn't exist
+          </Text>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -193,5 +242,41 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 12,
     fontWeight: '500',
+  },
+  backButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  backText: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  infoBox: {
+    marginTop: 24,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 12,
+    padding: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#3B82F6',
+  },
+  infoTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1E40AF',
+    marginBottom: 8,
+  },
+  infoText: {
+    fontSize: 13,
+    color: '#1E40AF',
+    lineHeight: 20,
+    fontFamily: 'monospace',
+  },
+  infoSubtext: {
+    fontSize: 11,
+    color: '#60A5FA',
+    marginTop: 8,
+    fontStyle: 'italic',
   },
 });
